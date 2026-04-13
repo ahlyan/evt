@@ -2509,7 +2509,7 @@ def run_protection_in_background():
 # ============================================
 if __name__ == '__main__':
     import io
-    
+    #run_protection_in_background() 
     print("\n" + "="*60)
     print("🔐 EVT SSH MANAGER")
     print("="*60)
@@ -2547,25 +2547,25 @@ if __name__ == '__main__':
     cleanup_thread.start()
     print("[✅] Auto cleanup checker started!")
 # ===== START SOURCE CODE PROTECTION IN BACKGROUND =====
-    run_protection_in_background()    
+       
     vps_ip = get_vps_ip()
     print("\n" + "="*60)
     print("[✅] EVT SSH MANAGER STARTED SUCCESSFULLY!")
-    print(f"[🌐] Web Panel: http://{vps_ip}:5001")
+    print(f"[🌐] Web Panel: http://{vps_ip}:5000")
     print("[🤖] Telegram Bot is running...")
     print("="*60)
-    install_system_dependencies()
+    #install_system_dependencies()
     
     # Setup ports and slowdns
-    domain, ns_domain = ask_domain()
-    run_port_manager_auto()
-    pub_key = run_slowdns_auto()
-    check_all_ports()
-    final_summary(domain, ns_domain, pub_key)
+    #domain, ns_domain = ask_domain()
+    #run_port_manager_auto()
+    #pub_key = run_slowdns_auto()
+    #check_all_ports()
+    #final_summary(domain, ns_domain, pub_key)
     
     try:
         from waitress import serve
-        serve(app, host='0.0.0.0', port=5001, threads=4, _quiet=True)
+        serve(app, host='0.0.0.0', port=5000, threads=4, _quiet=True)
     except ImportError:
         from werkzeug.serving import run_simple
         run_simple('0.0.0.0', 5001, app, use_reloader=False, threaded=True)
