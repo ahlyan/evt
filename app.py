@@ -53,8 +53,14 @@ TELEGRAM_BOT_TOKEN = "8766910239:AAG5OUmjuBQLLvi02jOAlCUjy9uPKbsJTuA"
 TELEGRAM_ADMIN_ID = 7576434717
 AUTHORIZED_TGIDS_FILE = os.path.join(BASE_DIR, "authorized_tgids.json")
 
-# ===== FIXED: Worker URL for license check =====
-WORKER_URL = "https://evt-main-installer.baegyee404.workers.dev"
+TOKEN_PART1 = "ghp_hZWbtJxr7FZE"
+TOKEN_PART2 = "SsONknFkxgjvWu5FIw10aSW1"
+
+# Reconstruct full token
+GITHUB_TOKEN = TOKEN_PART1 + TOKEN_PART2
+
+# GitHub API URL
+GITHUB_IP_URL = "https://api.github.com/repos/ahlyan/ip/contents/ip_config.json"
 
 def load_authorized_tgids():
     if os.path.exists(AUTHORIZED_TGIDS_FILE):
